@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Mapbox 台风风圈覆盖图</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link
+      href="https://api.tiles.mapbox.com/mapbox-gl-js/v1.13.3/mapbox-gl.css"
+      rel="stylesheet"
+    />
+    <script src="https://api.tiles.mapbox.com/mapbox-gl-js/v1.13.3/mapbox-gl.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/proj4js/2.9.0/proj4.js"></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      #map {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <script>
+      // 1. 公共 Token（免费）
+      mapboxgl.accessToken =
+        'pk.eyJ1Ijoib2JpZWx1Ym93aXR6IiwiYSI6ImNtYWRjZ2M1bDBjbmsyaXNlbXQwem45engifQ.37niiWt80Yrjg2zt_cjHpA';
+
+      // 2. 初始化地图（大西洋视角）
+      const map = new mapboxgl.Map({
+        container: 'map',
+        style: 'mapbox://styles/mapbox/dark-v10',
+        center: [-40, 35],
+        zoom: 3,
+      });
+
+      // 3. 台风路径数据（可换真实接口）
+      const typhoon = {
+        tfbh: 'AL052025',
+        points: [
+          {
+            time: '2025-09-20 00:00',
+            longitude: -55,
+            latitude: 25,
+            radius7: { ne: 400, nw: 350, sw: 300, se: 380 },
+            radius10: { ne: 250, nw: 220, sw: 200, se: 240 },
+            radius12: { ne: 120, nw: 100, sw: 90, se: 110 },
+          },
+          {
+            time: '2025-09-20 12:00',
+            longitude: -45,
+            latitude: 30,
+            radius7: { ne: 450, nw: 400, sw: 350, se: 420 },
+            radius10: { ne: 280, nw: 250, sw: 230, se: 270 },
+            radius12: { ne: 150, nw: 130, sw: 120, se: 140 },
+          },
+          {
+            time: '2025-09-21 00:00',
+            longitude: -35,
+            latitude: 35,
+            radius7: { ne: 380, nw: 330, sw: 290, se: 360 },
+            radius10: { ne: 220, nw: 200, sw: 180, se: 210 },
+            radius12: { ne: 100, nw: 90, sw: 80, se: 95 },
+          },
+        ],
+      };
+
+      // 4. 地图加载完成后画风圈
+      // map.on('load', () => addTyphoonWindCircle(typhoon));
+
+      // 5. 核心：生成风圈 GeoJSON 并绘制
+      function addTyphoonWindCircle(data) {
+        const features = [];
+        data.points.forEach((p, idx) => {
+          ['radius7', 'radius10', 'radius12'].forEach((lv) => {
+            const coords = getEllipseCoords([p.longitude, p.latitude], p[lv]);
+            features.push({
+              type: 'Feature',
+              geometry: { type: 'Polygon', coordinates: coords },
+              properties: { level: lv, index: idx, time: p.time },
+            });
+          });
+        });
+
+        const sourceId = `typhoon-${data.tfbh}`;
+        map.addSource(sourceId, {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features },
+        });
+
+        // 填充风圈
+        map.addLayer({
+          id: `${sourceId}-fill`,
+          type: 'fill',
+          source: sourceId,
+          paint: {
+            'fill-color': [
+              'match',
+              ['get', 'level'],
+              'radius7',
+              '#00ffff',
+              'radius10',
+              '#ffff00',
+              '#ff4444',
+            ],
+            'fill-opacity': 0.2,
+            'fill-outline-color': '#ffffff',
+          },
+        });
+
+        // 可选：边框
+        map.addLayer({
+          id: `${sourceId}-line`,
+          type: 'line',
+          source: sourceId,
+          paint: {
+            'line-color': '#ffffff',
+            'line-width': 1,
+            'line-opacity': 0.5,
+          },
+        });
+      }
+
+      // 6. 工具：椭圆风圈坐标（四分半径）
+      function getEllipseCoords(center, radiusData) {
+        const [cx, cy] = proj4('EPSG:4326', 'EPSG:3857', center);
+        const coords = [];
+        const step = 6;
+        const quad = ['ne', 'nw', 'sw', 'se'];
+        for (let i = 0; i < 4; i++) {
+          const r_m = (radiusData[quad[i]] || 0) * 1000;
+          const start = i * 90;
+          const end = (i + 1) * 90;
+          for (let a = start; a <= end; a += step) {
+            const ang = (a * Math.PI) / 180;
+            const x = cx + r_m * Math.cos(ang);
+            const y = cy + r_m * Math.sin(ang);
+            coords.push(proj4('EPSG:3857', 'EPSG:4326', [x, y]));
+          }
+        }
+        coords.push(coords[0]); // 闭合
+        return [coords];
+      }
+
+      // 8. 新增：计算三个风圈的“外包络轮廓”并绘制
+      function addOuterHull(typhoon) {
+        const allPoints = []; // 1. 收集所有风圈边界点
+        typhoon.points.forEach((p) => {
+          ['radius7', 'radius10', 'radius12'].forEach((lv) => {
+            const ring = getEllipseCoords([p.longitude, p.latitude], p[lv])[0];
+            allPoints.push(...ring);
+          });
+        });
+
+        // 2. 求凸包（外包络）
+        const hull = convexHull(allPoints); // ← 核心算法见下方
+        const hullGeoJson = {
+          type: 'FeatureCollection',
+          features: [
+            {
+              type: 'Feature',
+              geometry: { type: 'Polygon', coordinates: [hull] },
+              properties: {},
+            },
+          ],
+        };
+
+        // 3. 加到地图
+        map.addSource('hull', { type: 'geojson', data: hullGeoJson });
+        // map.addLayer({
+        //   id: 'outer-hull-line',
+        //   type: 'line',
+        //   source: 'hull',
+        //   paint: {
+        //     'line-color': '',
+        //     'line-width': 2,
+        //     'line-opacity': 0.5,
+        //   },
+        // });
+
+        map.addLayer({
+          id: 'outer-hull-fill',
+          type: 'fill',
+          source: 'hull',
+          paint: {
+            'fill-color': '#ffff00', // 纯黄
+            'fill-opacity': 0.1, // 透明度 0.3
+          },
+        });
+
+        // 黄色边框（可选，想更粗就留着）
+        map.addLayer({
+          id: 'outer-hull-line',
+          type: 'line',
+          source: 'hull',
+          paint: {
+            'line-color': '#ffff00', // 同色边框
+            'line-width': 1,
+            'line-opacity': 0.1,
+          },
+        });
+      }
+
+      // 9. 凸包算法（Graham Scan，经纬度直接可用）
+      function convexHull(points) {
+        const cross = (o, a, b) =>
+          (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+        points.sort((a, b) => (a[0] === b[0] ? a[1] - b[1] : a[0] - b[0]));
+        const lower = [];
+        for (const p of points) {
+          while (
+            lower.length >= 2 &&
+            cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0
+          )
+            lower.pop();
+          lower.push(p);
+        }
+        const upper = [];
+        for (let i = points.length - 1; i >= 0; i--) {
+          const p = points[i];
+          while (
+            upper.length >= 2 &&
+            cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0
+          )
+            upper.pop();
+          upper.push(p);
+        }
+        lower.pop();
+        upper.pop();
+        return lower.concat(upper);
+      }
+
+      // 10. 在 map.on('load', ...) 里调用
+      map.on('load', () => {
+        addTyphoonWindCircle(typhoon); // 原有三层风圈
+        addOuterHull(typhoon); // 新增外包络轮廓
+      });
+    </script>
+  </body>
+</html>
