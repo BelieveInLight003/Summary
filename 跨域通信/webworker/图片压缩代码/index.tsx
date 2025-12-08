@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import CompressWorker from './compress.worker?worker'; // 确保项目支持此语法
 
 const allImgNum = 100;
-const url = 'https://pic3.zhimg.com/v2-58d652598269710fa67ec8d1c88d8f03_r.jpg?source=1940ef5c';
+const url = 'https://pic3.zhimg.com/v2-58d652598269710fa67ec8d1c88d8f03_r.jpg?source=1940ef5c';9
 
 interface WorkerResponse {
   data: string[];
